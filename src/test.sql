@@ -12,7 +12,7 @@ CREATE FOREIGN TABLE IF NOT EXISTS db721_chicken (
     notes           varchar
 ) SERVER test_server OPTIONS
 (
-filename '/home/alyjay/Documents/dev/postgres/data-chickens.db721',
+filename '/home/alyjay/dev/rs_db721_fdw/src/data-chickens.db721',
 tablename 'Chicken'
 );
 select * from db721_chicken;

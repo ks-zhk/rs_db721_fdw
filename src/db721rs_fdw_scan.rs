@@ -2,17 +2,18 @@
 use crate::db721::{ColumnIterator, ColumnIteratorBuilder, DB721, DB721Type};
 use anyhow::Context;
 use libc::{c_uchar, memcpy, memset, size_t, strncmp};
-use pgrx::pg_sys::{cluster_name, defGetString, extract_actual_clauses, get_attname, lappend, list_concat, list_copy, list_make1_impl, list_union, makeVar, make_foreignscan, palloc0, pull_var_clause, relation_close, relation_open, scalararraysel, AccessShareLock, AttrNumber, BeginForeignScan_function, Cardinality, DefElem, ForEachState, ForeignScan, ForeignScanState, FormData_pg_attribute, GetForeignTable, List, ListCell, Node, NodeTag_T_List, Oid, PLpgSQL_stmt_foreach_a, PlannerInfo, RelOptInfo, Relation, RelationGetReplicaIndex, RestrictInfo, Size, TupleDesc, TupleDescGetAttInMetadata, Var, EXEC_FLAG_EXPLAIN_ONLY, LOCKMODE, NAMEDATALEN, PVC_RECURSE_AGGREGATES, PVC_RECURSE_PLACEHOLDERS, TupleTableSlot, Datum, Hash, ExecStoreVirtualTuple};
+use pgrx::pg_sys::{cluster_name, defGetString, extract_actual_clauses, get_attname, lappend, list_concat, list_copy, list_make1_impl, list_union, makeVar, make_foreignscan, palloc0, pull_var_clause, relation_close, relation_open, scalararraysel, AccessShareLock, AttrNumber, BeginForeignScan_function, Cardinality, DefElem, ForEachState, ForeignScan, ForeignScanState, FormData_pg_attribute, GetForeignTable, List, ListCell, Node, NodeTag_T_List, Oid, PLpgSQL_stmt_foreach_a, PlannerInfo, RelOptInfo, Relation, RelationGetReplicaIndex, RestrictInfo, Size, TupleDesc, TupleDescGetAttInMetadata, Var, EXEC_FLAG_EXPLAIN_ONLY, LOCKMODE, NAMEDATALEN, PVC_RECURSE_AGGREGATES, PVC_RECURSE_PLACEHOLDERS, TupleTableSlot, Datum, Hash, ExecStoreVirtualTuple, DatumTupleFields};
 use pgrx::prelude::*;
 use pgrx::{ereport, pg_guard, void_mut_ptr, PgList, PgLogLevel, NULL};
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::io::Write;
 use std::mem::size_of;
-use std::ops::Index;
+use std::ops::{DerefMut, Index};
 use std::path::PathBuf;
 use std::ptr;
 use std::str::Utf8Error;
+use core::option::Option;
 
 macro_rules! l_first {
     ($lc:ident) => {
@@ -60,20 +61,31 @@ impl DB721ScanState {
         tuple_desc: TupleDesc,
         column_list: *mut List,
         where_clause_list: *mut List,
-    ) -> *mut DB721ScanState {
+    ) -> *mut Option<DB721ScanState> {
         unsafe {
             ereport!(
                 PgLogLevel::WARNING,
                 PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
                 "in db_721_scan_state new func"
             );
-            let mut state = palloc0(size_of::<DB721ScanState>() as usize) as *mut DB721ScanState;
-            (*state).column_list = column_list;
-            (*state).tuple_desc = tuple_desc;
-            (*state).where_clause_list = where_clause_list;
-            (*state).db721 = db_721.clone();
-            (*state).column_iterators = HashMap::new();
-            (*state).column_index_map_name = HashMap::new();
+            let mut state = DB721ScanState{
+                db721: db_721.clone(),
+                column_list,
+                tuple_desc,
+                where_clause_list,
+                column_iterators: HashMap::new(),
+                column_index_map_name: HashMap::new(),
+            };
+            // let mut state = palloc0(size_of::<DB721ScanState>() as usize) as *mut DB721ScanState;
+            // let mut state = Box::new(Some(scan_state));
+            // Box::leak(state);
+            // std::mem::replace(state.deref_mut(), Box::new(Option::<DB721ScanState>::None));
+            // (*state).column_list = column_list;
+            // (*state).tuple_desc = tuple_desc;
+            // (*state).where_clause_list = where_clause_list;
+            // (*state).db721 = db_721.clone();
+            // (*state).column_iterators = HashMap::new();
+            // (*state).column_index_map_name = HashMap::new();
             // begin iterator
             let column_count = (*tuple_desc).natts;
             for index in 0..(*column_list).length {
@@ -90,11 +102,11 @@ impl DB721ScanState {
                     db_721.path.clone(),
                 );
                 let column_iterator = column_iterator_builder.build().unwrap();
-                (*state).column_iterators.insert(column_name.to_string(), column_iterator);
-                (*state).column_index_map_name.insert((*column).varattno -1, column_name.to_string());
+                state.column_iterators.insert(column_name.to_string(), column_iterator);
+                state.column_index_map_name.insert((*column).varattno -1, column_name.to_string());
             }
-            // todo!();
-            state
+            let b_state = Box::new(Some(state));
+            Box::leak(b_state)
         }
     }
 }
@@ -156,6 +168,11 @@ pub extern "C" fn db721_begin_foreign_scan(node: *mut ForeignScanState, e_flags:
             DB721ScanState::new(db_721, tuple_desc, column_list, where_clause_list);
         (*node).fdw_state = db721_scan_state as *mut c_void;
         // todo!("get select column infos")
+        ereport!(
+            PgLogLevel::WARNING,
+            PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
+            "success begin scan"
+        );
     }
 }
 // 主要用于成本估计，后续编写成本估计函数。
@@ -223,7 +240,7 @@ pub extern "C" fn db721_get_foreign_plan(
             foreign_private_list,
             ptr::null_mut(),
             ptr::null_mut(),
-            outer_plan,
+            ptr::null_mut(),
         );
         foreign_scan
     }
@@ -233,13 +250,17 @@ pub extern "C" fn db721_iterate_foreign_scan(
     node: *mut pg_sys::ForeignScanState,
 ) -> *mut pg_sys::TupleTableSlot {
     unsafe {
+        // ereport!(
+        //     PgLogLevel::WARNING,
+        //     PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
+        //     "in iterator!"
+        // );
         let db721_scan_state = (*node).fdw_state as *mut DB721ScanState;
         let tuple_table_slot = (*node).ss.ss_ScanTupleSlot;
         let tuple_desc = (*tuple_table_slot).tts_tupleDescriptor;
         let column_values = (*tuple_table_slot).tts_values;
         let column_nulls = (*tuple_table_slot).tts_isnull;
         let column_count = (*tuple_desc).natts;
-
         memset(
             column_values as *mut c_void,
             0,
@@ -259,6 +280,11 @@ pub extern "C" fn db721_iterate_foreign_scan(
         if next_row_found{
             ExecStoreVirtualTuple(tuple_table_slot);
         }
+        // ereport!(
+        //     PgLogLevel::WARNING,
+        //     PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
+        //     "success get row"
+        // );
         tuple_table_slot
     }
 }
@@ -442,21 +468,27 @@ pub extern "C" fn db721_read_next_row(
                 None => {return false}
                 Some(DB721Type::Str(str)) => {
                     // 手动内存管理
-                    let p_str = palloc0(str.len() + 1);
-                    memcpy(p_str, literal_str_to_cstr!(str.clone()) as *const c_void, str.len() + 1);
+                    let p_str = palloc0(str.len() + 1) as *mut c_char;
+                    memcpy(p_str as *mut c_void, literal_str_to_cstr!(str.clone()) as *mut c_void, str.len() + 1);
                     *(column_values.add(column_index as usize)) = Datum::from(p_str);
                 },
                 Some(DB721Type::Integer(val))  => {
                     let p_int = palloc0(size_of::<i32>()) as *mut i32;
                     *p_int = val;
-                    *(column_values.add(column_index as usize)) = Datum::from(p_int);
+                    *(column_values.add(column_index as usize)) = Datum::from(val);
                 },
                 Some(DB721Type::Float(val)) => {
-                    let p_f32 = palloc0(size_of::<f32>()) as *mut f32;
-                    *p_f32 = val;
-                    *(column_values.add(column_index as usize)) = Datum::from(p_f32);
+                    // let p_f32 = palloc0(size_of::<f32>()) as *mut f32;
+                    // *p_f32 = val;
+                    let res = u32::from_ne_bytes(val.to_ne_bytes());
+                    *(column_values.add(column_index as usize)) = Datum::from(res);
                 }
             };
+            // ereport!(
+            //     PgLogLevel::WARNING,
+            //     PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
+            //     column_name
+            // );
             *(column_nulls.add(column_index as usize)) = false;
         }
     }

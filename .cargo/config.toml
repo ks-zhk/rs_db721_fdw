@@ -1,9 +1,9 @@
 [target.'cfg(target_os="linux")']
 # Postgres symbols won't be available until runtime
 rustflags = ["-Clink-arg=-Wl,-undefined,dynamic_lookup"]
-
-[source.tuna]
-registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
-
+#
 [source.crates-io]
-replace-with = 'tuna'
+replace-with = 'ustc'
+
+[source.ustc]
+registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"
