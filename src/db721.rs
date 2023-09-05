@@ -64,19 +64,19 @@ impl ColumnMeta {
         offset
     }
 }
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DB721Meta {
     #[serde(rename = "Table")]
     table_name: String,
     #[serde(rename = "Max Values Per Block")]
     max_value_per_block: i32,
     #[serde(rename = "Columns")]
-    column_meta: HashMap<String, ColumnMeta>,
+    pub column_meta: HashMap<String, ColumnMeta>,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DB721 {
-    path: PathBuf,
-    meta: DB721Meta,
+    pub path: PathBuf,
+    pub meta: DB721Meta,
     meta_size: i32,
 }
 impl DB721 {
@@ -101,6 +101,17 @@ impl DB721 {
             meta: db721_meta,
             meta_size,
         });
+    }
+    pub fn row_count(&self) -> usize {
+        let column_metas = &self.meta.column_meta;
+        let mut row_cnt: usize = 0;
+        for column_meta in column_metas.values() {
+            for block_meta in column_meta.block_meta.values() {
+                row_cnt += block_meta.value_num as usize;
+            }
+            break;
+        }
+        row_cnt
     }
 }
 pub struct BlockIterator {
@@ -189,7 +200,7 @@ impl ColumnIteratorBuilder {
             max_len: None,
         }
     }
-    pub fn build(&self) -> ColumnIterator {
+    pub fn build(&self) -> anyhow::Result<ColumnIterator> {
         ColumnIterator::new(
             self.column_name.clone(),
             self.column_meta.clone(),
@@ -239,24 +250,22 @@ impl ColumnIterator {
         maxv: Option<DB721Type>,
         min_len: Option<i32>,
         max_len: Option<i32>,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let block_meta = column_meta
             .block_meta
-            .get(&0.to_string())
-            .expect("column must have one block")
-            .clone();
+            .get(&0.to_string()).with_context(|| "need at least one block to read")
+            ?.clone();
         let block = Arc::new(
             read_one_block(
                 column_meta.value_type.clone(),
                 column_meta.start_offset as usize,
                 block_meta.clone(),
                 file_path.clone(),
-            )
-            .unwrap(),
+            )?,
         );
         let block_iterator =
             BlockIterator::new(block, column_meta.value_type.clone(), block_meta).unwrap();
-        Self {
+        Ok(Self {
             column_meta,
             column_name,
             file_path,
@@ -267,7 +276,7 @@ impl ColumnIterator {
             maxv: None,
             min_len: None,
             max_len: None,
-        }
+        })
     }
     pub fn next(&mut self) -> Option<DB721Type> {
         while true {
@@ -403,7 +412,7 @@ mod tests {
                 db721.path.clone(),
             );
 
-            let mut column_iter = column_iterator_buildr.build();
+            let mut column_iter = column_iterator_buildr.build().unwrap();
             while let Some(val) = column_iter.next() {
                 if let DB721Type::Str(str) = val {
                     println!("str = {}", str);
@@ -456,7 +465,7 @@ mod tests {
                 column_name.clone(),
                 db721.path.clone(),
             );
-            let mut column_iter = column_iterator_buildr.build();
+            let mut column_iter = column_iterator_buildr.build().unwrap();
             let mut csv_iterator = csv_reader.records();
             while true {
                 let record = csv_iterator.next();
