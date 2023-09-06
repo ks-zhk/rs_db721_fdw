@@ -2,7 +2,7 @@
 use crate::db721::{ColumnIterator, ColumnIteratorBuilder, DB721, DB721Type};
 use anyhow::Context;
 use libc::{c_uchar, memcpy, memset, size_t, strncmp};
-use pgrx::pg_sys::{cluster_name, defGetString, extract_actual_clauses, get_attname, lappend, list_concat, list_copy, list_make1_impl, list_union, makeVar, make_foreignscan, palloc0, pull_var_clause, relation_close, relation_open, scalararraysel, AccessShareLock, AttrNumber, BeginForeignScan_function, Cardinality, DefElem, ForEachState, ForeignScan, ForeignScanState, FormData_pg_attribute, GetForeignTable, List, ListCell, Node, NodeTag_T_List, Oid, PLpgSQL_stmt_foreach_a, PlannerInfo, RelOptInfo, Relation, RelationGetReplicaIndex, RestrictInfo, Size, TupleDesc, TupleDescGetAttInMetadata, Var, EXEC_FLAG_EXPLAIN_ONLY, LOCKMODE, NAMEDATALEN, PVC_RECURSE_AGGREGATES, PVC_RECURSE_PLACEHOLDERS, TupleTableSlot, Datum, Hash, ExecStoreVirtualTuple, DatumTupleFields};
+use pgrx::pg_sys::{cluster_name, defGetString, extract_actual_clauses, get_attname, lappend, list_concat, list_copy, list_make1_impl, list_union, makeVar, make_foreignscan, palloc0, pull_var_clause, relation_close, relation_open, scalararraysel, AccessShareLock, AttrNumber, BeginForeignScan_function, Cardinality, DefElem, ForEachState, ForeignScan, ForeignScanState, FormData_pg_attribute, GetForeignTable, List, ListCell, Node, NodeTag_T_List, Oid, PLpgSQL_stmt_foreach_a, PlannerInfo, RelOptInfo, Relation, RelationGetReplicaIndex, RestrictInfo, Size, TupleDesc, TupleDescGetAttInMetadata, Var, EXEC_FLAG_EXPLAIN_ONLY, LOCKMODE, NAMEDATALEN, PVC_RECURSE_AGGREGATES, PVC_RECURSE_PLACEHOLDERS, TupleTableSlot, Datum, Hash, ExecStoreVirtualTuple, DatumTupleFields, varlena, VarChar, VARHDRSZ, VariableStatData};
 use pgrx::prelude::*;
 use pgrx::{ereport, pg_guard, void_mut_ptr, PgList, PgLogLevel, NULL};
 use std::collections::HashMap;
@@ -43,8 +43,77 @@ macro_rules! literal_str_to_cstr {
         CString::new($str).expect("CString::new failed").into_raw()
     }
 }
+/// input: Option; output: mut reference of inner of this option
+/// Will PANIC if option is NONE
+macro_rules! def_option_ptr_mut {
+    ($ptr:ident) => {
+        if let Some(o_ref) = &mut (($ptr)) {
+            o_ref
+        } else {
+            panic!("can not deference None Option")
+        }
+    };
+    ($ptr:expr) => {
+        if let Some(o_ref) = &mut (($ptr)) {
+            o_ref
+        } else {
+            panic!("can not deference None Option")
+        }
+    };
+}
+/// input: Option; output: mut reference of inner of this option
+/// Will PANIC if option is NONE
+macro_rules! def_option_ptr {
+    ($ptr:ident) => {
+        if let Some(o_ref) = &(($ptr)) {
+            o_ref
+        } else {
+            panic!("can not deference None Option")
+        }
+    };
+    ($ptr:expr) => {
+        if let Some(o_ref) = &(($ptr)) {
+            o_ref
+        } else {
+            panic!("can not deference None Option")
+        }
+    };
+}
+macro_rules! warning_log {
+    ($str:literal) => {
+        ereport!(
+            PgLogLevel::WARNING,
+            PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
+            $str
+        );
+    };
+    ($str:expr) => {
+        ereport!(
+            PgLogLevel::WARNING,
+            PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
+            $str
+        );
+    }
+}
 
-
+// macro_rules! convert_u32_to_4char {
+//     ($num:ident) => {
+//         let mut result: [std::os::raw::c_char; 4usize] = [0 as std::os::raw::c_char; 4usize];
+//         result[0] = (($num >> 24) & 0xFF) as std::os::raw::c_char;
+//         result[1] = (($num >> 16) & 0xFF) as std::os::raw::c_char;
+//         result[2] = (($num >> 8) & 0xFF) as std::os::raw::c_char;
+//         result[3] = ($num & 0xFF) as std::os::raw::c_char;
+//         result
+//     };
+//     ($num:expr) => {
+//         let mut result = [0 as std::os::raw::c_char; 4usize];
+//         result[0] = ((($num) >> 24) & 0xFF) as std::os::raw::c_char;
+//         result[1] = ((($num) >> 16) & 0xFF) as std::os::raw::c_char;
+//         result[2] = ((($num) >> 8) & 0xFF) as std::os::raw::c_char;
+//         result[3] = (($num) & 0xFF) as std::os::raw::c_char;
+//         result
+//     };
+// }
 pub struct DB721ScanState {
     db721: DB721,
     column_list: *mut List,
@@ -55,6 +124,9 @@ pub struct DB721ScanState {
 }
 
 impl DB721ScanState {
+    /// 这里返回 *mut Option<DB721ScanState> 的原因是为了能够
+    /// 在foreign_scan_end函数中，对rust自动申请的堆内存进行释
+    /// 放（使用std::mem::replace）
     #[pg_guard]
     pub fn new(
         db_721: DB721,
@@ -76,17 +148,6 @@ impl DB721ScanState {
                 column_iterators: HashMap::new(),
                 column_index_map_name: HashMap::new(),
             };
-            // let mut state = palloc0(size_of::<DB721ScanState>() as usize) as *mut DB721ScanState;
-            // let mut state = Box::new(Some(scan_state));
-            // Box::leak(state);
-            // std::mem::replace(state.deref_mut(), Box::new(Option::<DB721ScanState>::None));
-            // (*state).column_list = column_list;
-            // (*state).tuple_desc = tuple_desc;
-            // (*state).where_clause_list = where_clause_list;
-            // (*state).db721 = db_721.clone();
-            // (*state).column_iterators = HashMap::new();
-            // (*state).column_index_map_name = HashMap::new();
-            // begin iterator
             let column_count = (*tuple_desc).natts;
             for index in 0..(*column_list).length {
                 let lc = l_nth_cell!(column_list, index) as *mut ListCell;
@@ -108,6 +169,14 @@ impl DB721ScanState {
             let b_state = Box::new(Some(state));
             Box::leak(b_state)
         }
+    }
+    pub fn is_end(&self) -> bool{
+        for column_it in self.column_iterators.values(){
+            if !column_it.is_end() {
+                return false
+            }
+        }
+        true
     }
 }
 #[pg_guard]
@@ -250,12 +319,7 @@ pub extern "C" fn db721_iterate_foreign_scan(
     node: *mut pg_sys::ForeignScanState,
 ) -> *mut pg_sys::TupleTableSlot {
     unsafe {
-        // ereport!(
-        //     PgLogLevel::WARNING,
-        //     PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-        //     "in iterator!"
-        // );
-        let db721_scan_state = (*node).fdw_state as *mut DB721ScanState;
+        let db721_scan_state = (def_option_ptr_mut!(*((*node).fdw_state as *mut Option<DB721ScanState>))) as *mut DB721ScanState;
         let tuple_table_slot = (*node).ss.ss_ScanTupleSlot;
         let tuple_desc = (*tuple_table_slot).tts_tupleDescriptor;
         let column_values = (*tuple_table_slot).tts_values;
@@ -280,14 +344,11 @@ pub extern "C" fn db721_iterate_foreign_scan(
         if next_row_found{
             ExecStoreVirtualTuple(tuple_table_slot);
         }
-        // ereport!(
-        //     PgLogLevel::WARNING,
-        //     PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-        //     "success get row"
-        // );
         tuple_table_slot
     }
 }
+/// 利用replace手动触发drop机制，释放rust自动申请的堆内存。
+/// 防止内存泄漏
 #[pg_guard]
 pub extern "C" fn db721_end_foreign_scan(node: *mut pg_sys::ForeignScanState) {
     ereport!(
@@ -295,11 +356,17 @@ pub extern "C" fn db721_end_foreign_scan(node: *mut pg_sys::ForeignScanState) {
         PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
         "into db721_end_foreign_scan"
     );
-    // do nothing!
+    unsafe {
+        /// 利用replace手动触发drop机制，释放rust自动申请的堆内存。
+        /// 防止内存泄漏
+        std::mem::replace(
+            &mut *((*node).fdw_state as *mut Option<DB721ScanState>),
+            Option::<DB721ScanState>::None,
+        );
+    }
 }
 /// from foreign_table's option, get the filename
 /// travel the options list, and match the key of option, return the value
-
 #[pg_guard]
 pub extern "C" fn db721_get_option_value(
     foreign_table_id: pgrx::pg_sys::Oid,
@@ -465,12 +532,17 @@ pub extern "C" fn db721_read_next_row(
                 .expect("get column iterator by column name failed");
             let next_val = column_iterator.next();
             match next_val{
-                None => {return false}
+                None => {
+                    // warning_log!(column_name);
+                    // warning_log!("occur next none");
+                    continue;
+                },
                 Some(DB721Type::Str(str)) => {
-                    // 手动内存管理
-                    let p_str = palloc0(str.len() + 1) as *mut c_char;
-                    memcpy(p_str as *mut c_void, literal_str_to_cstr!(str.clone()) as *mut c_void, str.len() + 1);
-                    *(column_values.add(column_index as usize)) = Datum::from(p_str);
+                    // if str.len() == 0 {
+                    //     warning_log!("this is zero str");
+                    // }
+                    let text_p =  pgrx::rust_str_to_text_p(str.as_str());
+                    *(column_values.add(column_index as usize)) = Datum::from(text_p.into_pg());
                 },
                 Some(DB721Type::Integer(val))  => {
                     let p_int = palloc0(size_of::<i32>()) as *mut i32;
@@ -478,18 +550,14 @@ pub extern "C" fn db721_read_next_row(
                     *(column_values.add(column_index as usize)) = Datum::from(val);
                 },
                 Some(DB721Type::Float(val)) => {
-                    // let p_f32 = palloc0(size_of::<f32>()) as *mut f32;
-                    // *p_f32 = val;
                     let res = u32::from_ne_bytes(val.to_ne_bytes());
                     *(column_values.add(column_index as usize)) = Datum::from(res);
                 }
             };
-            // ereport!(
-            //     PgLogLevel::WARNING,
-            //     PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-            //     column_name
-            // );
             *(column_nulls.add(column_index as usize)) = false;
+        }
+        if (*scan_state).is_end(){
+            return false
         }
     }
     true

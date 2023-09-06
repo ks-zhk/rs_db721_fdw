@@ -61,6 +61,7 @@ impl ColumnMeta {
                 _ => panic!("unsupported value type"),
             } * blk_meta.value_num as usize;
         }
+        // dbg!(offset);
         offset
     }
 }
@@ -87,8 +88,8 @@ impl DB721 {
         let mut r_size = file.read_to_end(&mut buf)?;
         assert_eq!(r_size, 4);
         let meta_size = (&buf[0..]).get_i32_le();
-        dbg!(&buf);
-        dbg!(meta_size);
+        // dbg!(&buf);
+        // dbg!(meta_size);
         assert!(meta_size > 0);
         let _ = file.seek(SeekFrom::Current(-((meta_size + 4) as i64)))?;
         buf.clear();
@@ -240,8 +241,11 @@ pub struct ColumnIterator {
     maxv: Option<DB721Type>,
     min_len: Option<i32>,
     max_len: Option<i32>,
+    is_end: bool,
 }
 impl ColumnIterator {
+    pub fn is_end(&self) -> bool{self.is_end}
+
     pub fn new(
         column_name: String,
         column_meta: ColumnMeta,
@@ -276,16 +280,25 @@ impl ColumnIterator {
             maxv: None,
             min_len: None,
             max_len: None,
+            is_end: false,
         })
     }
     pub fn next(&mut self) -> Option<DB721Type> {
+        if self.is_end {
+            return None;
+        }
         while true {
-            if self.next_block_idx >= self.column_meta.num_blocks {
+            if self.next_block_idx > self.column_meta.num_blocks {
+                self.is_end = true;
                 return None;
             }
             match self.now_block_iterator.next() {
                 None => {
                     // let offset = self.column_meta.get_offset_of_block(self.next_block_idx);
+                    if self.next_block_idx == self.column_meta.num_blocks{
+                        self.is_end = true;
+                        return None;
+                    }
                     let blk_meta = self
                         .column_meta
                         .block_meta
@@ -308,7 +321,7 @@ impl ColumnIterator {
                     let block = Arc::new(
                         read_one_block(
                             self.column_meta.value_type.clone(),
-                            offset,
+                            self.column_meta.start_offset as usize + offset,
                             blk_meta.clone(),
                             self.file_path.clone(),
                         )
@@ -359,20 +372,28 @@ fn read_one_block(
 }
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
     use crate::db721::DB721Type::Str;
     use crate::db721::{
         read_one_block, BlockIterator, ColumnIterator, ColumnIteratorBuilder, DB721Type, DB721,
     };
     use std::path::PathBuf;
     use std::sync::Arc;
+    use serde::de::Unexpected::Option;
 
     fn get_test_db721() -> DB721 {
-        let path = PathBuf::from("data-chickens.db721");
+        let path = PathBuf::from("/home/alyjay/dev/rs_db721_fdw/src/data-chickens.db721");
         DB721::open(path).unwrap()
     }
     fn get_test_dbcsv() -> csv::Reader<std::fs::File> {
         let path = PathBuf::from("data-chickens.csv");
         csv::Reader::from_path(path).unwrap()
+    }
+    #[test]
+    fn export_json_meta() {
+        let db721 = get_test_db721();
+        let mut file = std::fs::OpenOptions::new().create(true).write(true).read(true).open("/home/alyjay/dev/rs_db721_fdw/src/db721.json").unwrap();
+        file.write_all(serde_json::to_string(&db721.meta).unwrap().as_bytes()).unwrap();
     }
     #[test]
     fn test_blk_iterator_no_error() {
@@ -423,28 +444,6 @@ mod tests {
             break;
         }
     }
-    // #[test]
-    // fn test_column_min_max_iterator_no_error() {
-    //     let db721 = get_test_db721();
-    //     for (column_name, column_meta) in db721.meta.column_meta.iter(){
-    //         let mut column_iter = ColumnIterator::new(
-    //             column_name.clone(),
-    //             column_meta.clone(),
-    //             db721.path.clone(),
-    //         );
-    //         if let "int" = column_meta.value_type.as_str(){
-    //             while let Some(val) = column_iter.min_max_next(
-    //                 Some(DB721Type::Integer(60000)),
-    //                 Some(DB721Type::Integer(100000)),
-    //             ){
-    //                 dbg!(val);
-    //             }
-    //         }else {
-    //             continue
-    //         }
-    //         break
-    //     }
-    // }
     #[test]
     fn test_db721type_order_compare() {
         let db721int_big = DB721Type::Integer(100);
@@ -475,5 +474,42 @@ mod tests {
             }
             break;
         }
+    }
+    #[test]
+    fn test_str_truncate(){
+        let mut strr = String::from("12345");
+        strr.truncate(0);
+        assert_eq!(strr.len(),0);
+    }
+    #[test]
+    fn test_50001_column_name_and_value() {
+        let db721 = get_test_db721();
+        let column_name_id = "identifier";
+        let column_name_sex = "sex";
+        let column_meta_id = db721.meta.column_meta.get(column_name_id).unwrap();
+        let column_meta_sex = db721.meta.column_meta.get(column_name_sex).unwrap();
+        let column_iterator_builder_id = ColumnIteratorBuilder::new(
+            column_meta_id.clone(),
+            column_name_id.to_string(),
+            db721.path.clone(),
+        );
+        let column_iterator_builder_sex = ColumnIteratorBuilder::new(
+            column_meta_sex.clone(),
+            column_name_sex.to_string(),
+            db721.path.clone(),
+        );
+        let mut c_id_it = column_iterator_builder_id.build().unwrap();
+        let mut c_sex_it = column_iterator_builder_sex.build().unwrap();
+        while true{
+            let id = c_id_it.next();
+            let sex = c_sex_it.next();
+            if let None = id{
+                break;
+            }
+            if let Some(DB721Type::Integer(50001)) = id{
+                assert_eq!(sex, Some(DB721Type::Str(String::from("FEMALE"))));
+            }
+        }
+
     }
 }

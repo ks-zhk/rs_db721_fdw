@@ -16,3 +16,22 @@ filename '/home/alyjay/dev/rs_db721_fdw/src/data-chickens.db721',
 tablename 'Chicken'
 );
 select * from db721_chicken;
+
+
+DROP EXTENSION pg_hello_world CASCADE;
+CREATE EXTENSION pg_hello_world;
+create foreign data wrapper test_wrapper handler db721_fdw_handler;
+create server test_server foreign data wrapper test_wrapper;
+CREATE FOREIGN TABLE IF NOT EXISTS db721_chicken (
+    identifier      integer,
+    farm_name       text,
+    weight_model    text,
+    sex             text,
+    age_weeks       real,
+    weight_g        real,
+    notes           text
+) SERVER test_server OPTIONS
+(
+filename '/home/alyjay/dev/rs_db721_fdw/src/data-chickens.db721',
+tablename 'Chicken'
+);
