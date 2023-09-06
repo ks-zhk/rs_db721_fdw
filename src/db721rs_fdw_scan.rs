@@ -45,7 +45,7 @@ macro_rules! literal_str_to_cstr {
         CString::new($str).expect("CString::new failed").into_raw()
     }
 }
-/// 提取option中的元素，并返回
+/// 提取option中的元素，并返回其可变引用(&mut T)
 /// input: Option; output: mut reference of inner of this option
 /// Will PANIC if option is NONE
 macro_rules! def_option_ptr_mut {
@@ -64,6 +64,7 @@ macro_rules! def_option_ptr_mut {
         }
     };
 }
+/// 提取option内的对象，返回不可变引用
 /// input: Option; output: mut reference of inner of this option
 /// Will PANIC if option is NONE
 macro_rules! def_option_ptr {
@@ -82,6 +83,7 @@ macro_rules! def_option_ptr {
         }
     };
 }
+/// 使用ereport进行log
 macro_rules! warning_log {
     ($str:literal) => {
         ereport!(
@@ -98,25 +100,6 @@ macro_rules! warning_log {
         );
     }
 }
-
-// macro_rules! convert_u32_to_4char {
-//     ($num:ident) => {
-//         let mut result: [std::os::raw::c_char; 4usize] = [0 as std::os::raw::c_char; 4usize];
-//         result[0] = (($num >> 24) & 0xFF) as std::os::raw::c_char;
-//         result[1] = (($num >> 16) & 0xFF) as std::os::raw::c_char;
-//         result[2] = (($num >> 8) & 0xFF) as std::os::raw::c_char;
-//         result[3] = ($num & 0xFF) as std::os::raw::c_char;
-//         result
-//     };
-//     ($num:expr) => {
-//         let mut result = [0 as std::os::raw::c_char; 4usize];
-//         result[0] = ((($num) >> 24) & 0xFF) as std::os::raw::c_char;
-//         result[1] = ((($num) >> 16) & 0xFF) as std::os::raw::c_char;
-//         result[2] = ((($num) >> 8) & 0xFF) as std::os::raw::c_char;
-//         result[3] = (($num) & 0xFF) as std::os::raw::c_char;
-//         result
-//     };
-// }
 pub struct DB721ScanState {
     db721: DB721,
     column_list: *mut List,
@@ -138,11 +121,7 @@ impl DB721ScanState {
         where_clause_list: *mut List,
     ) -> *mut Option<DB721ScanState> {
         unsafe {
-            ereport!(
-                PgLogLevel::WARNING,
-                PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-                "in db_721_scan_state new func"
-            );
+            // warning_log!("in db_721_scan_state new func");
             let mut state = DB721ScanState{
                 db721: db_721.clone(),
                 column_list,
@@ -182,6 +161,7 @@ impl DB721ScanState {
         true
     }
 }
+/// 行数预测
 #[pg_guard]
 pub extern "C" fn db721_get_foreign_rel_size(
     root: *mut pg_sys::PlannerInfo,
@@ -189,22 +169,21 @@ pub extern "C" fn db721_get_foreign_rel_size(
     foreign_table_id: pg_sys::Oid,
 ) {
     unsafe {
+        // 首先获取表对应的文件名
         let file_name = db721_get_option_value(foreign_table_id, literal_str_to_cstr!("filename"));
         let cstr_file_name = CStr::from_ptr(file_name);
+        // 进行文件元信息的读取
         let db721_table = DB721::open(PathBuf::from(
             cstr_file_name
                 .to_str()
                 .expect("file_name should be valid UTF-8"),
         ))
         .unwrap();
+        // 获取行数量，并赋值给pg中的对象
         (*base_rel).rows = db721_table.row_count() as Cardinality;
-        ereport!(
-            PgLogLevel::WARNING,
-            PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-            db721_table.row_count().to_string()
-        );
     }
 }
+/// 准备开始扫表，主要工作是创建扫描状态。
 #[pg_guard]
 pub extern "C" fn db721_begin_foreign_scan(node: *mut ForeignScanState, e_flags: c_int) {
     unsafe {
@@ -214,11 +193,7 @@ pub extern "C" fn db721_begin_foreign_scan(node: *mut ForeignScanState, e_flags:
         if (e_flags & EXEC_FLAG_EXPLAIN_ONLY as c_int) != 0 {
             return;
         }
-        ereport!(
-            PgLogLevel::WARNING,
-            PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-            "try to get filename"
-        );
+        // 获取文件名（C字符串）
         let mut filename_raw = db721_get_option_value(
             relation_id,
             CString::new("filename")
@@ -239,15 +214,9 @@ pub extern "C" fn db721_begin_foreign_scan(node: *mut ForeignScanState, e_flags:
         let db721_scan_state =
             DB721ScanState::new(db_721, tuple_desc, column_list, where_clause_list);
         (*node).fdw_state = db721_scan_state as *mut c_void;
-        // todo!("get select column infos")
-        ereport!(
-            PgLogLevel::WARNING,
-            PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-            "success begin scan"
-        );
     }
 }
-// 主要用于成本估计，后续编写成本估计函数。
+// 主要用于成本估计，后续编写成本估计函数，现在为了简单起见，暂时不估计。
 #[pg_guard]
 pub extern "C" fn db721_get_foreign_paths(
     root: *mut pg_sys::PlannerInfo,
@@ -255,11 +224,6 @@ pub extern "C" fn db721_get_foreign_paths(
     foreign_table_id: pg_sys::Oid,
 ) {
     unsafe {
-        ereport!(
-            PgLogLevel::WARNING,
-            PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-            "into db721_get_foreign_paths"
-        );
         let path = pg_sys::create_foreignscan_path(
             root,
             base_rel,
@@ -275,6 +239,7 @@ pub extern "C" fn db721_get_foreign_paths(
         pg_sys::add_path(base_rel, &mut ((*path).path));
     }
 }
+/// 生成plan的函数，主要工作是获取需要从文件中读取的列信息。
 #[pg_guard]
 pub extern "C" fn db721_get_foreign_plan(
     root: *mut pg_sys::PlannerInfo,
@@ -286,18 +251,8 @@ pub extern "C" fn db721_get_foreign_plan(
     outer_plan: *mut pg_sys::Plan,
 ) -> *mut pg_sys::ForeignScan {
     unsafe {
-        ereport!(
-            PgLogLevel::WARNING,
-            PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-            "into db721_get_foreign_plan"
-        );
         let new_scan_clauses = extract_actual_clauses(scan_clauses, false);
         let column_list = db721_column_list(base_rel, foreign_table_id);
-        ereport!(
-            PgLogLevel::WARNING,
-            PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-            "success get column_list"
-        );
         let foreign_private_list = list_make1_impl(
             NodeTag_T_List,
             ListCell {
@@ -317,6 +272,7 @@ pub extern "C" fn db721_get_foreign_plan(
         foreign_scan
     }
 }
+/// 进行迭代，每调用一次获取一行。
 #[pg_guard]
 pub extern "C" fn db721_iterate_foreign_scan(
     node: *mut pg_sys::ForeignScanState,
@@ -325,7 +281,9 @@ pub extern "C" fn db721_iterate_foreign_scan(
         let db721_scan_state = (def_option_ptr_mut!(*((*node).fdw_state as *mut Option<DB721ScanState>))) as *mut DB721ScanState;
         let tuple_table_slot = (*node).ss.ss_ScanTupleSlot;
         let tuple_desc = (*tuple_table_slot).tts_tupleDescriptor;
+        // 结果数组
         let column_values = (*tuple_table_slot).tts_values;
+        // 结果是否为null数组
         let column_nulls = (*tuple_table_slot).tts_isnull;
         let column_count = (*tuple_desc).natts;
         memset(
@@ -339,6 +297,7 @@ pub extern "C" fn db721_iterate_foreign_scan(
             column_count as size_t * size_of::<bool>(),
         );
         (*((*tuple_table_slot).tts_ops)).clear.unwrap()(tuple_table_slot);
+        // 读取下一行
         let next_row_found = db721_read_next_row(
             db721_scan_state,
             column_values,
@@ -354,13 +313,8 @@ pub extern "C" fn db721_iterate_foreign_scan(
 /// 防止内存泄漏
 #[pg_guard]
 pub extern "C" fn db721_end_foreign_scan(node: *mut pg_sys::ForeignScanState) {
-    ereport!(
-        PgLogLevel::WARNING,
-        PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-        "into db721_end_foreign_scan"
-    );
     unsafe {
-        /// 利用replace手动触发drop机制，释放rust自动申请的堆内存。
+        /// 利用replace手动触发drop，释放rust自动申请的堆内存。
         /// 防止内存泄漏
         std::mem::replace(
             &mut *((*node).fdw_state as *mut Option<DB721ScanState>),
@@ -384,11 +338,7 @@ pub extern "C" fn db721_get_option_value(
                 as *mut ListCell))
                 .ptr_value as *mut DefElem;
             if option_def.is_null() {
-                ereport!(
-                    PgLogLevel::WARNING,
-                    PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-                    "option_def_is_null"
-                );
+                warning_log!("option_def_is_null");
             }
             let option_def_name = (*option_def).defname;
             if strncmp(option_def_name, option_name, NAMEDATALEN as size_t) == 0 {
@@ -397,25 +347,13 @@ pub extern "C" fn db721_get_option_value(
             }
         }
         if option_value.is_null() {
-            ereport!(
-                PgLogLevel::WARNING,
-                PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-                "option value get failed, is null"
-            );
+            warning_log!("option value get failed, is null");
         }
         option_value
     };
 }
 
-// pub extern "C" fn db721_get_options(foreign_table_id: Oid) -> *mut DB721FdwOptions{
-//     unsafe {
-//         let file_name = db721_get_option_value(foreign_table_id, OPTION_NAME_FILENAME);
-//         let table_name = db721_get_option_value(foreign_table_id, OPTION_NAME_TABLENAME);
-//
-//     }
-//     ptr::null_mut()
-// }
-
+/// 获取所有需要读取的列信息
 #[pg_guard]
 pub extern "C" fn db721_column_list(base_rel: *mut RelOptInfo, foreign_table_id: Oid) -> *mut List {
     unsafe {
@@ -438,28 +376,14 @@ pub extern "C" fn db721_column_list(base_rel: *mut RelOptInfo, foreign_table_id:
             );
             need_column_list = list_union(need_column_list, target_val_list);
         }
-        ereport!(
-            PgLogLevel::WARNING,
-            PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-            "success get columns in target_column_list"
-        );
         if !restrict_info_list.is_null(){
             // 然后获取在where子句中所使用的column
             for i in 0..(*restrict_info_list).length {
                 let list_cell = l_nth_cell!(restrict_info_list, i) as *mut ListCell;
                 let restrict_clause =
                     (*(l_first!(list_cell) as *mut RestrictInfo)).clause as *mut Node;
-                ereport!(
-                PgLogLevel::WARNING,
-                PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-                "success get restrict_clause"
-            );
                 if restrict_clause.is_null(){
-                    ereport!(
-                    PgLogLevel::WARNING,
-                    PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-                    "restrict_clause is null"
-                );
+                    warning_log!("restrict_clause is null");
                 }
                 let clause_column_list = pull_var_clause(
                     restrict_clause,
@@ -468,11 +392,6 @@ pub extern "C" fn db721_column_list(base_rel: *mut RelOptInfo, foreign_table_id:
                 need_column_list = list_union(need_column_list, clause_column_list);
             }
         }
-        ereport!(
-            PgLogLevel::WARNING,
-            PgSqlErrorCode::ERRCODE_SUCCESSFUL_COMPLETION,
-            "success get columns in restrict_info_list"
-        );
         // 清除重复的column
         for column_index in 1..column_count + 1 {
             let attr_form = (((*tuple_desc).attrs.as_mut_ptr()) as *mut FormData_pg_attribute)
@@ -499,7 +418,6 @@ pub extern "C" fn db721_column_list(base_rel: *mut RelOptInfo, foreign_table_id:
                         (*attr_form).attcollation,
                         0,
                     );
-                    // get_attname()
                     break;
                 }
             }
@@ -512,14 +430,15 @@ pub extern "C" fn db721_column_list(base_rel: *mut RelOptInfo, foreign_table_id:
         column_list
     }
 }
+/// 读取下一行
 #[pg_guard]
 pub extern "C" fn db721_read_next_row(
     scan_state: *mut DB721ScanState,
     column_values: *mut Datum,
     column_nulls: *mut bool,
 ) -> bool{
-    // set all column_null to 1
     unsafe {
+        // set all column_null to true
         memset(
             column_nulls as *mut c_void,
             c_int::from(true),
@@ -536,14 +455,9 @@ pub extern "C" fn db721_read_next_row(
             let next_val = column_iterator.next();
             match next_val{
                 None => {
-                    // warning_log!(column_name);
-                    // warning_log!("occur next none");
                     continue;
                 },
                 Some(DB721Type::Str(str)) => {
-                    // if str.len() == 0 {
-                    //     warning_log!("this is zero str");
-                    // }
                     let text_p =  pgrx::rust_str_to_text_p(str.as_str());
                     *(column_values.add(column_index as usize)) = Datum::from(text_p.into_pg());
                 },
@@ -559,6 +473,7 @@ pub extern "C" fn db721_read_next_row(
             };
             *(column_nulls.add(column_index as usize)) = false;
         }
+        // 只有全部都获取到的none才算获取完毕。
         if (*scan_state).is_end(){
             return false
         }
