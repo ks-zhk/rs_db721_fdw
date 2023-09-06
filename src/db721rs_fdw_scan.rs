@@ -15,11 +15,13 @@ use std::ptr;
 use std::str::Utf8Error;
 use core::option::Option;
 
+/// 获取一个列表元素中的指针值, ListCell是一个union
 macro_rules! l_first {
     ($lc:ident) => {
         (*($lc as *mut ListCell)).ptr_value
     };
 }
+/// 获取列表中第n个ListCell
 macro_rules! l_nth_cell {
     ($list:ident, $idx: ident) => {
         ((*$list).elements as usize + size_of::<*mut ListCell>() * ($idx as usize)) as *mut c_void
@@ -31,7 +33,7 @@ macro_rules! l_nth_cell {
         ((*$list).elements as usize + size_of::<*mut ListCell>() * ($idx as usize)) as *mut c_void
     }
 }
-
+/// 将rust字符串转为c字符串，并返回 char *
 macro_rules! literal_str_to_cstr {
     ($str:literal) => {
         CString::new($str).expect("CString::new failed").into_raw()
@@ -43,6 +45,7 @@ macro_rules! literal_str_to_cstr {
         CString::new($str).expect("CString::new failed").into_raw()
     }
 }
+/// 提取option中的元素，并返回
 /// input: Option; output: mut reference of inner of this option
 /// Will PANIC if option is NONE
 macro_rules! def_option_ptr_mut {
